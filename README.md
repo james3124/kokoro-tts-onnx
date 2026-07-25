@@ -50,7 +50,7 @@ git push -u origin main
 | `SUPABASE_KEY` | your service role key |
 | `DEFAULT_VOICE` | e.g. `af_heart` (optional) |
 | `LANG_CODE` | e.g. `a` for American EN (optional) |
-| `SUPABASE_BUCKET` | go to storage and create a new bucket e.g audio  |
+
 `MODEL_PATH`, `VOICES_PATH`, and `ORT_THREADS` are pre-set in `render.yaml` and do not need to be changed unless you switch model variants.
 
 ### 4. Supabase bucket

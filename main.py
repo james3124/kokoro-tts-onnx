@@ -81,9 +81,10 @@ def get_kokoro():
         sess_options = rt.SessionOptions()
         # Enable all graph optimisations (fused ops, const folding, etc.)
         sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
-        # Keep memory arenas to avoid repeated alloc/free between requests
-        sess_options.enable_mem_pattern   = True
-        sess_options.enable_cpu_mem_arena = True
+        # Disable memory arenas on free tier — releases memory immediately after inference
+        # instead of pooling it, which prevents OOM on 512 MB hosts
+        sess_options.enable_mem_pattern   = False
+        sess_options.enable_cpu_mem_arena = False
         # Single-thread inference: avoids contention on free-tier single-core hosts
         sess_options.intra_op_num_threads = ORT_THREADS
         sess_options.execution_mode       = rt.ExecutionMode.ORT_SEQUENTIAL
@@ -132,7 +133,7 @@ async def lifespan(app: FastAPI):
     unload_all()
 
 
-app = FastAPI(title="Kokoro TTS", version="4.0.0", lifespan=lifespan)
+app = FastAPI(title="Kokoro TTS", version="4.1.0", lifespan=lifespan)
 
 
 # ── Schemas ────────────────────────────────────────────────────────────────────
@@ -178,7 +179,10 @@ def _synthesize(text: str, voice: str, speed: float, lang_code: str, split_patte
 
     if not chunks:
         raise RuntimeError("No audio chunks returned")
-    return np.concatenate(chunks)
+    result = np.concatenate(chunks)
+    del chunks      # free intermediate buffers immediately
+    gc.collect()
+    return result
 
 
 def _to_wav(audio: np.ndarray) -> bytes:
@@ -196,6 +200,11 @@ def _upload(filename: str, wav: bytes) -> str:
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
+@app.get("/")
+async def root():
+    return {"status": "ok", "service": "kokoro-tts", "version": "4.1.0"}
+
+
 @app.post("/tts", response_model=TTSResponse)
 async def tts(req: TTSRequest):
     global _last_request
@@ -220,6 +229,10 @@ async def tts(req: TTSRequest):
         raise HTTPException(500, f"TTS error: {e}")
 
     wav      = _to_wav(audio)
+    duration = round(len(audio) / SAMPLE_RATE, 2)
+    del audio       # free numpy array before upload — reduces peak RAM
+    gc.collect()
+
     filename = f"tts_{uuid.uuid4()}.wav"
 
     try:
@@ -229,7 +242,6 @@ async def tts(req: TTSRequest):
         raise HTTPException(500, f"Storage error: {e}")
 
     _last_request = time.time()
-    duration = round(len(audio) / SAMPLE_RATE, 2)
     logger.info(f"✅ {filename} | {duration}s | {voice}")
 
     return TTSResponse(
