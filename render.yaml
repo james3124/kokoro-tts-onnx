@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: kokoro-tts
+    runtime: python
+    buildCommand: >-
+      apt-get install -y espeak-ng &&
+      pip install -r requirements.txt &&
+      python warmup.py
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    plan: free
+    envVars:
+      - key: MODEL_PATH
+        value: ./models/kokoro-v1.0.int8.onnx   # INT8 model — 88 MB, best for free tier
+      - key: VOICES_PATH
+        value: ./models/voices-v1.0.bin
+      - key: ORT_THREADS
+        value: "1"                               # Matches free-tier single-core CPUs
+      - key: DEFAULT_VOICE
+        value: af_heart                          # Change to swap default voice
+      - key: LANG_CODE
+        value: a                                 # a=American EN, b=British EN, e=Spanish, etc.
+      - key: SUPABASE_BUCKET
+        value: audio
+      - key: SUPABASE_URL
+        sync: false                              # Set in Render dashboard
+      - key: SUPABASE_KEY
+        sync: false                              # Set in Render dashboard
+      - key: PYTHONUNBUFFERED
+        value: "1"
