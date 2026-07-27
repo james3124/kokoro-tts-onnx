@@ -23,8 +23,8 @@ SAMPLE_RATE     = 24000
 UNLOAD_AFTER    = int(os.environ.get("UNLOAD_AFTER_SECONDS", "60"))
 
 # Model file paths — downloaded by warmup.py at build time
-MODEL_PATH  = os.environ.get("MODEL_PATH",  "./models/kokoro-v1.0.int8.onnx")
-VOICES_PATH = os.environ.get("VOICES_PATH", "./models/voices-v1.0.bin")
+MODEL_PATH  = os.environ.get("MODEL_PATH",  "/tmp/models/kokoro-v1.0.int8.onnx")
+VOICES_PATH = os.environ.get("VOICES_PATH", "/tmp/models/voices-v1.0.bin")
 
 # ONNX runtime threads (1 is safest for free-tier single-core hosts)
 ORT_THREADS = int(os.environ.get("ORT_THREADS", "1"))
@@ -67,6 +67,23 @@ _supabase      = None
 
 
 # ── Kokoro ONNX helpers ────────────────────────────────────────────────────────
+MODEL_URL  = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.int8.onnx"
+VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
+
+
+def _ensure_models():
+    """Download model files if not present — handles hosts where build-time
+    downloads do not persist into the runtime filesystem (e.g. Vercel)."""
+    import urllib.request
+    from pathlib import Path
+    for url, path in [(MODEL_URL, MODEL_PATH), (VOICES_URL, VOICES_PATH)]:
+        if not Path(path).exists():
+            logger.info(f"Model file missing — downloading {url} → {path}")
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            urllib.request.urlretrieve(url, path)
+            logger.info(f"Downloaded: {path}")
+
+
 def get_kokoro():
     """
     Lazily load and return a single reusable Kokoro ONNX session.
@@ -74,6 +91,7 @@ def get_kokoro():
     """
     global _kokoro
     if _kokoro is None:
+        _ensure_models()
         logger.info(f"Loading kokoro-onnx model from '{MODEL_PATH}' ...")
         import onnxruntime as rt
         from kokoro_onnx import Kokoro
@@ -182,6 +200,12 @@ def _synthesize(text: str, voice: str, speed: float, lang_code: str, split_patte
     result = np.concatenate(chunks)
     del chunks      # free intermediate buffers immediately
     gc.collect()
+    # Force glibc to return freed pages to the OS — prevents RSS bloat on free-tier hosts
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
     return result
 
 
@@ -232,6 +256,11 @@ async def tts(req: TTSRequest):
     duration = round(len(audio) / SAMPLE_RATE, 2)
     del audio       # free numpy array before upload — reduces peak RAM
     gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
 
     filename = f"tts_{uuid.uuid4()}.wav"
 

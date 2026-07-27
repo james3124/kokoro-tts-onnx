@@ -10,8 +10,14 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Model file locations (INT8 ONNX ~88 MB, FP32 ~310 MB)
-ENV MODEL_PATH=/app/models/kokoro-v1.0.int8.onnx
-ENV VOICES_PATH=/app/models/voices-v1.0.bin
+ENV MODEL_PATH=/tmp/models/kokoro-v1.0.int8.onnx
+ENV VOICES_PATH=/tmp/models/voices-v1.0.bin
+
+# Reduce glibc memory arena fragmentation — critical for 512 MB hosts.
+# Without this, glibc holds onto freed RAM instead of returning it to the OS,
+# causing the process to appear to use far more memory than it actually needs.
+ENV MALLOC_ARENA_MAX=2
+ENV PYTHONMALLOC=malloc
 
 # Download model files and run synthesis smoke-test at build time
 COPY warmup.py .
