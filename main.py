@@ -1,6 +1,5 @@
 import os, gc, re, time
 import io
-import uuid
 import logging
 import asyncio
 from contextlib import asynccontextmanager
@@ -9,14 +8,13 @@ from typing import Optional
 import numpy as np
 import soundfile as sf
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from supabase import create_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-SUPABASE_BUCKET = os.environ.get("SUPABASE_BUCKET", "audio")
 DEFAULT_VOICE   = os.environ.get("DEFAULT_VOICE", "af_heart")
 DEFAULT_LANG    = os.environ.get("LANG_CODE", "a")
 SAMPLE_RATE     = 24000
@@ -63,7 +61,6 @@ ALL_VOICES = [v for group in VOICES.values() for v in group]
 # ── State ──────────────────────────────────────────────────────────────────────
 _kokoro        = None   # single kokoro_onnx.Kokoro instance (replaces _pipelines dict)
 _last_request  = 0.0
-_supabase      = None
 
 
 # ── Kokoro ONNX helpers ────────────────────────────────────────────────────────
@@ -138,12 +135,6 @@ async def unload_watcher():
 # ── Lifespan ───────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _supabase
-    logger.info("Connecting to Supabase...")
-    _supabase = create_client(
-        os.environ["SUPABASE_URL"],
-        os.environ["SUPABASE_KEY"],
-    )
     logger.info(f"🚀 Ready — model loads on first request, unloads after {UNLOAD_AFTER}s idle")
     task = asyncio.create_task(unload_watcher())
     yield
@@ -161,14 +152,6 @@ class TTSRequest(BaseModel):
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
     lang_code: Optional[str] = Field(default=None)
     split_pattern: Optional[str] = Field(default=r"\n+")
-
-
-class TTSResponse(BaseModel):
-    url: str
-    filename: str
-    duration_seconds: float
-    voice: str
-    lang_code: str
 
 
 # ── Core ───────────────────────────────────────────────────────────────────────
@@ -215,13 +198,6 @@ def _to_wav(audio: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
-def _upload(filename: str, wav: bytes) -> str:
-    _supabase.storage.from_(SUPABASE_BUCKET).upload(
-        path=filename, file=wav,
-        file_options={"content-type": "audio/wav"},
-    )
-    return _supabase.storage.from_(SUPABASE_BUCKET).get_public_url(filename)
-
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.get("/")
@@ -229,7 +205,7 @@ async def root():
     return {"status": "ok", "service": "kokoro-tts", "version": "4.1.0"}
 
 
-@app.post("/tts", response_model=TTSResponse)
+@app.post("/tts")
 async def tts(req: TTSRequest):
     global _last_request
     _last_request = time.time()
@@ -254,7 +230,7 @@ async def tts(req: TTSRequest):
 
     wav      = _to_wav(audio)
     duration = round(len(audio) / SAMPLE_RATE, 2)
-    del audio       # free numpy array before upload — reduces peak RAM
+    del audio
     gc.collect()
     try:
         import ctypes
@@ -262,21 +238,11 @@ async def tts(req: TTSRequest):
     except Exception:
         pass
 
-    filename = f"tts_{uuid.uuid4()}.wav"
-
-    try:
-        url = await loop.run_in_executor(None, lambda: _upload(filename, wav))
-    except Exception as e:
-        logger.exception("Upload failed")
-        raise HTTPException(500, f"Storage error: {e}")
-
     _last_request = time.time()
-    logger.info(f"✅ {filename} | {duration}s | {voice}")
+    logger.info(f"✅ {duration}s | {voice}")
 
-    return TTSResponse(
-        url=url, filename=filename,
-        duration_seconds=duration, voice=voice, lang_code=lang_code,
-    )
+    # Return binary WAV directly — no Supabase upload needed
+    return Response(content=wav, media_type="audio/wav")
 
 
 @app.get("/health")
